@@ -4,13 +4,15 @@
 <br>Asset total:
 1. n/a
 2. n/a
-<br>Transaction total:
+
+Transaction total:
 1. n/a
 2. n/a
 ## 横 version is like:
 <br>Asset total:
 1. n/a 2. n/a
-<br>Transaction total:
+
+Transaction total:
 1. n/a 2. n/a
 
 The result all showed TSV version : n/a  n/a ( which can copy and paste in Excel directly)
