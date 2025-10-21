@@ -1,14 +1,14 @@
 # Transform-CSV-s-data-into-TSV-Version
 # In Notebooklm's answer, CSV version always 2 type which is including 縦 or 横 version.
 ## 縦 version is like:
-Asset total:
+<br>Asset total:
 1. n/a
 2. n/a
 <br>Transaction total:
 1. n/a
 2. n/a
 ## 横 version is like:
-Asset total:
+<br>Asset total:
 1. n/a 2. n/a
 <br>Transaction total:
 1. n/a 2. n/a
