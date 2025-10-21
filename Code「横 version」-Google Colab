@@ -1,0 +1,168 @@
+# === Colab: Parse "inline index,value pairs" per section -> TSV rows ===
+# Input pattern example:
+# ASSET Total (Input) - アーバス筑後町
+# 1,n/a 2,n/a 3,アーバス筑後町 4,n/a ... 70,n/a
+# TRANSACTION (Input) - アーバス筑後町
+# 1,n/a 2,n/a ... 150,n/a
+#
+# Output (TSV to copy into Excel):
+# ASSET Total (Input) - アーバス筑後町
+# n/a \t n/a \t アーバス筑後町 \t n/a ...
+# TRANSACTION (Input) - アーバス筑後町
+# n/a \t n/a \t ... (tabs are real \t)
+#
+# Robust to:
+# - Values glued without spaces between pairs (e.g., "13,=120.20614,=3203...")
+# - Quoted values with spaces/commas
+# - Multi-line content blocks
+# - Japanese text, formulas, etc.
+
+import re, datetime
+from typing import List, Tuple
+import ipywidgets as w
+from IPython.display import display, HTML
+
+HEADER_RE = re.compile(r'^\s*(?!\d+,).+?$')           # line does NOT start with "digits,"
+PAIR_START_RE = re.compile(r'(\d+),')                 # finds every "index," anchor
+
+def normalize_text(s: str) -> str:
+    """Normalize line breaks and strip outer code fences."""
+    s = s.replace("\r\n", "\n").replace("\r", "\n").strip()
+    s = re.sub(r"^\s*```[a-zA-Z]*\s*\n", "", s)
+    s = re.sub(r"\n\s*```$", "", s)
+    return s
+
+def split_sections(raw: str) -> List[Tuple[str, str]]:
+    """
+    Split into (header, content_block).
+    A header is any line NOT starting with 'digits,'.
+    Content lines usually start with 'digits,', but we join consecutive lines
+    until the next header.
+    """
+    lines = [ln for ln in normalize_text(raw).split("\n") if ln.strip() != ""]
+    sections = []
+    current_header = None
+    buffer = []
+
+    def flush():
+        nonlocal current_header, buffer
+        if current_header is not None:
+            content = " ".join(buffer).strip()
+            sections.append((current_header, content))
+        current_header, buffer = None, []
+
+    for ln in lines:
+        if HEADER_RE.match(ln):
+            # New header starts; flush previous section
+            flush()
+            current_header = ln.strip()
+        else:
+            # Content line (starts with digits,) or odd line; append
+            buffer.append(ln.strip())
+
+    flush()  # last one
+    return sections
+
+def parse_pairs(content: str) -> List[Tuple[str, str]]:
+    """
+    Parse "idx,value" pairs from a content string that may have no spaces between pairs.
+    Strategy:
+      - Find all occurrences of "(\d+)," using regex anchors.
+      - For each anchor, the value spans from end of this match to the start of next match.
+      - Trim spaces; keep quoted/JP text/commas as-is; scrub inner tabs/newlines.
+    """
+    values = []
+    content = content.strip()
+    anchors = list(PAIR_START_RE.finditer(content))
+    for i, m in enumerate(anchors):
+        idx = m.group(1)
+        start = m.end()
+        end = anchors[i+1].start() if i+1 < len(anchors) else len(content)
+        val = content[start:end].strip()
+        # Remove surrounding quotes if it's a single quoted field
+        if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+            val = val[1:-1]
+        # Scrub tabs/newlines inside value (TSV-safe)
+        val = val.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+        values.append((idx, val))
+    return values
+
+def section_to_tsv_lines(header: str, content: str, sort_by_index=True) -> List[str]:
+    pairs = parse_pairs(content)
+    if sort_by_index:
+        try:
+            pairs.sort(key=lambda kv: int(re.sub(r'[^\d-]+', '', kv[0]) or "0"))
+        except Exception:
+            pass
+    row_values = [v for _, v in pairs]
+    # Join with real tabs
+    return [header, "\t".join(row_values)]
+
+# ---------- Widgets UI ----------
+
+inp = w.Textarea(
+    value="",
+    placeholder="Paste your content here.\nExample:\nASSET Total (Input) - アーバス筑後町\n1,n/a 2,n/a 3,アーバス筑後町 ... 70,n/a\nTRANSACTION (Input) - アーバス筑後町\n1,n/a 2,n/a ... 150,n/a",
+    description="Input",
+    layout=w.Layout(width="100%", height="280px"),
+)
+
+excel_mode = w.Checkbox(value=False, description="Excel-friendly download (UTF-16)")
+btn = w.Button(description="Convert", button_style="primary")
+tsv_area = w.Textarea(
+    value="",
+    placeholder="TSV result will appear here. Copy & paste into Excel.",
+    description="TSV",
+    layout=w.Layout(width="100%", height="240px"),
+)
+download_btn = w.Button(description="Download .tsv", disabled=True)
+out = w.Output()
+
+def on_convert(_):
+    out.clear_output()
+    tsv_area.value = ""
+    try:
+        sections = split_sections(inp.value)
+        lines = []
+        for header, content in sections:
+            if not content:
+                # still print header + empty line to keep structure
+                lines.append(header)
+                lines.append("")
+            else:
+                lines.extend(section_to_tsv_lines(header, content, sort_by_index=True))
+        tsv_text = "\n".join(lines)
+        tsv_area.value = tsv_text
+
+        # Save file for optional download
+        fname = f"sections_flat_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv"
+        if excel_mode.value:
+            with open(fname, "w", encoding="utf-16") as f:
+                f.write(tsv_text)
+        else:
+            with open(fname, "w", encoding="utf-8", newline="\n") as f:
+                f.write(tsv_text)
+        download_btn.description = f"Download {fname}"
+        download_btn._filename = fname
+        download_btn.disabled = False
+
+        with out:
+            display(HTML("<b>Done.</b> Copy the TSV above or download the file."))
+    except Exception as e:
+        with out:
+            display(HTML(f"<span style='color:red'>Error: {e}</span>"))
+
+def on_download(_):
+    try:
+        from google.colab import files
+        files.download(download_btn._filename)
+    except Exception as e:
+        with out:
+            display(HTML(f"<span style='color:red'>Download error: {e}</span>"))
+
+btn.on_click(on_convert)
+download_btn.on_click(on_download)
+
+display(HTML("<h3>Inline (index,value) → TSV (one row per section)</h3>"
+             "<p>Paste sections with lines of '1,val 2,val ...'. The parser is space-agnostic and handles glued pairs.</p>"))
+display(inp, w.HBox([btn, excel_mode]), tsv_area, w.HBox([download_btn]), out)
