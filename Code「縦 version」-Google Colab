@@ -1,0 +1,192 @@
+# 💡💡💡If CSV's format showed the 「縦 version」 -- According to the Input part -- Use this code!!! 
+
+# === Colab: Section-wise CSV (index,value) -> Flattened TSV row per section ===
+# Robust UI (fixes Dropdown value error) + Auto-detect delimiter option
+# Output format:
+#   Section Header
+#   v1 \t v2 \t v3 ...
+#   Next Section Header
+#   v1 \t v2 ...
+# Copy the TSV block directly into Excel.
+
+import io, re, csv, datetime
+import ipywidgets as w
+from IPython.display import display, HTML
+
+# ---------- Helpers ----------
+
+def clean_block(txt: str) -> str:
+    """Normalize line endings and strip code fences."""
+    txt = txt.replace("\r\n", "\n").replace("\r", "\n").strip()
+    # drop Markdown fences if pasted
+    txt = re.sub(r"^\s*```[a-zA-Z]*\s*\n", "", txt)
+    txt = re.sub(r"\n\s*```$", "", txt)
+    return txt
+
+def sniff_delimiter(sample_text: str) -> str:
+    """Guess delimiter from a small sample."""
+    sample = "\n".join(sample_text.splitlines()[:50])
+    try:
+        d = csv.Sniffer().sniff(sample, delimiters=[",", "\t", ";", "|"])
+        return d.delimiter
+    except Exception:
+        # fallback: choose the delimiter with most occurrences
+        counts = {",": sample.count(","), "\t": sample.count("\t"),
+                  ";": sample.count(";"), "|": sample.count("|")}
+        return max(counts, key=counts.get)
+
+def is_section_header(line: str, delim: str) -> bool:
+    """
+    Decide if a line is a section header:
+    - has no delimiter, or
+    - only one token after split by delimiter.
+    """
+    s = line.strip()
+    if not s:
+        return False
+    if delim not in s:
+        return True
+    parts = [p.strip() for p in s.split(delim)]
+    return len(parts) == 1
+
+def parse_and_flatten(text: str, delimiter_choice: str,
+                      keep_headers: bool = True,
+                      try_sort_by_index: bool = True) -> str:
+    """
+    Convert block with sections:
+      Header
+      idx{delim}value
+      idx{delim}value
+    into:
+      Header
+      value \t value \t value ...
+    """
+    t = clean_block(text)
+    if delimiter_choice == "AUTO":
+        delim = sniff_delimiter(t)
+    else:
+        delim = delimiter_choice
+
+    lines = [ln for ln in t.split("\n") if ln.strip() != ""]
+    out_lines = []
+    current_header = None
+    buf = []  # list of (idx, value)
+
+    def flush():
+        if current_header is None:
+            return
+        if keep_headers:
+            out_lines.append(current_header)
+        data = buf
+        if try_sort_by_index:
+            try:
+                data = sorted(
+                    buf,
+                    key=lambda kv: int(re.sub(r"[^\d-]+", "", kv[0]).strip())
+                )
+            except Exception:
+                pass
+        values = [
+            str(v).replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+            for _, v in data
+        ]
+        out_lines.append("\t".join(values))
+
+    for raw in lines:
+        s = raw.strip()
+        if is_section_header(s, delim):
+            # New section
+            if current_header is not None:
+                flush()
+                buf = []
+            current_header = s
+        else:
+            # Expect "index{delim}value" (split once)
+            parts = [p.strip() for p in s.split(delim, 1)]
+            if len(parts) == 1:
+                idx, val = str(len(buf) + 1), parts[0]
+            else:
+                idx, val = parts[0], parts[1]
+            buf.append((idx, val))
+
+    # Flush last section
+    if current_header is not None:
+        flush()
+
+    return "\n".join(out_lines)
+
+# ---------- Widgets (robust Dropdown) ----------
+
+inp = w.Textarea(
+    value="",
+    placeholder="Paste your content:\nASSET Total (Input) 1-70\n1,n/a\n2,n/a\n...\nTRANSACTION (Input) 1-150\n1,n/a\n2,n/a",
+    description="Input",
+    layout=w.Layout(width="100%", height="260px"),
+)
+
+# Use (label, value) to avoid 'value not in options' on reruns
+DELIM_OPTIONS = [
+    ("Auto-detect", "AUTO"),
+    ("Comma (,)", ","),
+    ("Tab (\\t)", "\t"),
+    ("Semicolon (;)", ";"),
+    ("Pipe (|)", "|"),
+]
+
+delimiter_dd = w.Dropdown(
+    options=DELIM_OPTIONS,
+    value="AUTO",             # safe default that always exists in options
+    description="Delimiter",
+)
+
+btn = w.Button(description="Convert", button_style="primary")
+tsv_area = w.Textarea(
+    value="",
+    placeholder="TSV result will appear here. Copy & paste into Excel.",
+    description="TSV",
+    layout=w.Layout(width="100%", height="220px"),
+)
+excel_mode = w.Checkbox(value=False, description="Excel-friendly (UTF-16)")
+download_btn = w.Button(description="Download .tsv", disabled=True)
+out = w.Output()
+
+def on_convert(_):
+    out.clear_output()
+    tsv_area.value = ""
+    try:
+        tsv_text = parse_and_flatten(inp.value, delimiter_dd.value)
+        tsv_area.value = tsv_text
+
+        # Prepare downloadable file
+        fname = f"flattened_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv"
+        if excel_mode.value:
+            with open(fname, "w", encoding="utf-16") as f:
+                f.write(tsv_text)
+        else:
+            with open(fname, "w", encoding="utf-8", newline="\n") as f:
+                f.write(tsv_text)
+        download_btn.description = f"Download {fname}"
+        download_btn._filename = fname
+        download_btn.disabled = False
+
+        with out:
+            display(HTML("<b>Done.</b> TSV is ready above; you can also download the file."))
+    except Exception as e:
+        with out:
+            display(HTML(f"<span style='color:red'>Error: {e}</span>"))
+
+def on_download(_):
+    try:
+        from google.colab import files
+        files.download(download_btn._filename)
+    except Exception as e:
+        with out:
+            display(HTML(f"<span style='color:red'>Download error: {e}</span>"))
+
+btn.on_click(on_convert)
+download_btn.on_click(on_download)
+
+display(HTML("<h3>Section-wise CSV → Single-row TSV Converter</h3>"
+             "<p>Each section header is preserved; its (index,value) lines are flattened horizontally.</p>"))
+display(inp, delimiter_dd, w.HBox([btn, excel_mode]), tsv_area, w.HBox([download_btn]), out)
+
